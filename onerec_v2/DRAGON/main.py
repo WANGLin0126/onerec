@@ -15,7 +15,7 @@ os.environ['NUMEXPR_MAX_THREADS'] = '48'
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", "-m", type=str, default="DRAGON", help="name of model")
-    parser.add_argument("--dataset", "-d", type=str, default="sports_sparse", help="name of dataset")
+    parser.add_argument("--dataset", "-d", type=str, default="baby_sparse", help="name of dataset")
 
     # Ablation 开关参数（True / False）
     parser.add_argument("--use_homogeneity", type=ast.literal_eval, default=True, help="whether to use homogeneity info (True/False)")
@@ -66,10 +66,10 @@ if __name__ == '__main__':
             'use_align_loss': args.use_align_loss,
             'use_residual': args.use_residual,
             'learning_rate': [0.05],
-            'mix_bpr_weight_loss': [0.001],
-            'dragon_bpr_weight': [0.1],
-            'align_weight_loss': [0.01],
-            'diver_weight_loss': [0.1],
+            'mix_bpr_weight_loss': [0.1],
+            'dragon_bpr_weight': [0.001],
+            'align_weight_loss': [0.001],
+            'diver_weight_loss': [0.001],
             'seed': [999],
         }
     elif args.dataset == 'sports_sparse':
@@ -79,10 +79,10 @@ if __name__ == '__main__':
             'use_align_loss': args.use_align_loss,
             'use_residual': args.use_residual,
             'learning_rate': [0.05],
-            'mix_bpr_weight_loss': [0.1],
-            'dragon_bpr_weight': [0.5],
+            'mix_bpr_weight_loss': [0.01],
+            'dragon_bpr_weight': [0.001],
             'align_weight_loss': [0.05],
-            'diver_weight_loss': [0.001],
+            'diver_weight_loss': [0.05],
             'seed': [999],
         }
 
