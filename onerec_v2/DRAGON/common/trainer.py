@@ -186,6 +186,38 @@ class Trainer(AbstractTrainer):
 
         return total_losses, []
 
+
+    @torch.no_grad()
+    def evaluate(self, eval_data, is_test=False, idx=0):
+        r"""Evaluate the model on eval_data using full-sort predict."""
+        self.model.eval()
+
+        # DRAGON 等模型在 eval 时也依赖 masked_adj / epoch_user_graph
+        if hasattr(self.model, 'pre_epoch_processing') and \
+                getattr(self.model, 'masked_adj', None) is None:
+            self.model.pre_epoch_processing()
+
+        batch_matrix_list = []
+        for batch_idx, batched_data in enumerate(eval_data):
+            batch_mask_matrix = batched_data[1]
+
+            # full sort 预测: [B, n_items]
+            scores = self.model.full_sort_predict(batched_data)
+
+            # mask 掉训练集中已交互的 item
+            if batch_mask_matrix is not None and batch_mask_matrix.numel() > 0:
+                scores[batch_mask_matrix[0], batch_mask_matrix[1]] = -np.inf
+
+            # 取 topk
+            _, topk_index = torch.topk(scores, max(self.evaluator.topk), dim=-1)
+            batch_matrix_list.append(topk_index)
+
+        result = self.evaluator.evaluate(
+            batch_matrix_list, eval_data, is_test=is_test, idx=idx
+        )
+        return result
+
+
     def _valid_epoch(self, valid_data, is_test=False, idx=0):
         r"""Valid the model with valid data
 
@@ -196,7 +228,8 @@ class Trainer(AbstractTrainer):
             float: valid score
             dict: valid result
         """
-        valid_result = self.evaluate(valid_data,is_test,idx)
+        # valid_result = self.evaluate(valid_data,is_test,idx)
+        valid_result = self.evaluate(valid_data)
         valid_score = valid_result[self.valid_metric] if self.valid_metric else valid_result['NDCG@20']
         return valid_score, valid_result
 
@@ -276,34 +309,49 @@ class Trainer(AbstractTrainer):
     #                     self.logger.info(stop_output)
     #                 break
     #     return self.best_valid_score, self.best_valid_result, self.best_test_upon_valid
+    def _save_checkpoint(self, epoch_idx, valid_result, test_result, tag='best'):
+            """保存模型 checkpoint(简化版)"""
+            checkpoint_dir = self.config['checkpoint_dir']
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            
+            # Config 对象用 [] 取值,不支持 .get()
+            try:
+                ckpt_tag = self.config['ckpt_tag']
+            except Exception:
+                ckpt_tag = tag
+            
+            dataset_name = self.config['dataset']
+            model_name = self.config['model']
+            ckpt_name = f'ckpt_{model_name}_{dataset_name}_{ckpt_tag}.pth'
+            ckpt_path = os.path.join(checkpoint_dir, ckpt_name)
+            
+            state = {
+                'epoch': epoch_idx,
+                'state_dict': self.model.state_dict(),
+                'best_valid_score': self.best_valid_score,
+                'valid_result': valid_result,
+                'test_result': test_result,
+            }
+            torch.save(state, ckpt_path)
+            self.logger.info(f'██ Checkpoint saved to {ckpt_path}')
+            return ckpt_path
+
+
     def fit(self, train_data, valid_data=None, test_data=None, saved=False, verbose=True):
-        r"""Train the model based on the train data and the valid data.
-
-        Args:
-            train_data (DataLoader): the train data
-            valid_data (DataLoader, optional): the valid data, default: None.
-                                            If it's None, the early_stopping is invalid.
-            test_data (DataLoader, optional): None
-            verbose (bool, optional): whether to write training and evaluation information to logger, default: True
-            saved (bool, optional): whether to save the model parameters, default: True
-
-        Returns:
-            (float, dict): best valid score and best valid result. If valid_data is None, it returns (-1, None)
-        """
+        r"""Train the model based on the train data and the valid data."""
         # 初始化 loss 日志列表
         loss_log = []
+        best_ckpt_path = None  # <<< 新增:记录最佳 ckpt 路径
 
         for epoch_idx in range(self.start_epoch, self.epochs):
             # train
             training_start_time = time()
             self.model.pre_epoch_processing()
-            train_losses, _ = self._train_epoch(train_data, epoch_idx)  # 返回 dict
+            train_losses, _ = self._train_epoch(train_data, epoch_idx)
             self.lr_scheduler.step()
 
-            # 记录总 loss（兼容旧逻辑）
             self.train_loss_dict[epoch_idx] = train_losses['total_loss']
 
-            # 生成日志字符串：包含所有 loss 分量
             loss_str = ", ".join([f"{k}: {v:.6f}" for k, v in train_losses.items()])
             training_end_time = time()
             train_loss_output = f"epoch {epoch_idx} training [time: {training_end_time - training_start_time:.2f}s, {loss_str}]"
@@ -314,12 +362,11 @@ class Trainer(AbstractTrainer):
                 if post_info is not None:
                     self.logger.info(post_info)
 
-            # 保存当前 epoch 的 loss 到日志
             log_entry = {'epoch': epoch_idx}
             log_entry.update({k: round(v, 6) for k, v in train_losses.items()})
             loss_log.append(log_entry)
 
-            # eval: To ensure the test result is the best model under validation data, set self.eval_step == 1
+            # eval
             if (epoch_idx + 1) % self.eval_step == 0:
                 valid_start_time = time()
                 valid_score, valid_result = self._valid_epoch(valid_data)
@@ -330,18 +377,26 @@ class Trainer(AbstractTrainer):
                 valid_score_output = "epoch %d evaluating [time: %.2fs, valid_score: %f]" % \
                                     (epoch_idx, valid_end_time - valid_start_time, valid_score)
                 valid_result_output = 'valid result: \n' + dict2str(valid_result)
-                # test
                 _, test_result = self._valid_epoch(test_data, False, epoch_idx)
                 if verbose:
                     self.logger.info(valid_score_output)
                     self.logger.info(valid_result_output)
                     self.logger.info('test result: \n' + dict2str(test_result))
+                
                 if update_flag:
                     update_output = '██ ' + self.config['model'] + '--Best validation results updated!!!'
                     if verbose:
                         self.logger.info(update_output)
                     self.best_valid_result = valid_result
                     self.best_test_upon_valid = test_result
+                    
+                    # ============ 新增:保存最佳 ckpt ============
+                    try:
+                        best_ckpt_path = self._save_checkpoint(
+                            epoch_idx, valid_result, test_result)
+                    except Exception as e:
+                        self.logger.warning(f'Failed to save checkpoint: {e}')
+                    # ===========================================
 
                 if stop_flag:
                     stop_output = '+++++Finished training, best eval result in epoch %d' % \
@@ -353,41 +408,19 @@ class Trainer(AbstractTrainer):
         # === 训练结束后保存 loss 到 CSV ===
         try:
             import pandas as pd
-            # 确保 checkpoint_dir 存在
             checkpoint_dir = self.config['checkpoint_dir']
-            os.makedirs(checkpoint_dir, exist_ok=True)  # <<< 关键修复
-
+            os.makedirs(checkpoint_dir, exist_ok=True)
             csv_path = os.path.join(checkpoint_dir, 'loss_log.csv')
             df_loss = pd.DataFrame(loss_log)
             df_loss.to_csv(csv_path, index=False)
             self.logger.info(f"Training finished. Loss log saved to {csv_path}")
         except Exception as e:
             self.logger.warning(f"Failed to save loss log: {e}")
+        
+        if best_ckpt_path:
+            self.logger.info(f'██ Best checkpoint at: {best_ckpt_path}')
 
         return self.best_valid_score, self.best_valid_result, self.best_test_upon_valid
-
-    @torch.no_grad()
-    def evaluate(self, eval_data, is_test=False, idx=0):
-        r"""Evaluate the model based on the eval data.
-        Returns:
-            dict: eval result, key is the eval metric and value in the corresponding metric value
-        """
-        self.model.eval()
-
-        # batch full users
-        batch_matrix_list = []
-        for batch_idx, batched_data in enumerate(eval_data):
-            # predict: interaction without item ids
-            scores = self.model.full_sort_predict(batched_data)
-            masked_items = batched_data[1]
-            # mask out pos items
-            scores[masked_items[0], masked_items[1]] = -1e10
-            # rank and get top-k
-            # TODO: 检查前 top k 个元素是否有重复
-            _, topk_index = torch.topk(scores, max(self.config['topk']), dim=-1)  # nusers x topk
-            # print(f"Top K indices: {scores[topk_index[0]]}")
-            batch_matrix_list.append(topk_index)
-        return self.evaluator.evaluate(batch_matrix_list, eval_data, is_test=is_test, idx=idx)
 
     def plot_train_loss(self, show=True, save_path=None):
         r"""Plot the train loss in each epoch
