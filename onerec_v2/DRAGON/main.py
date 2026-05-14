@@ -40,10 +40,10 @@ if __name__ == '__main__':
             'use_residual': args.use_residual,
             'ckpt_tag': args.ckpt_tag,        # <<< 修改 2:塞进 config_dict
             'learning_rate': [0.05],
-            'mix_bpr_weight_loss': [0.8],
-            'dragon_bpr_weight': [0.001],
-            'align_weight_loss': [0.1],
-            'diver_weight_loss': [0.05],
+            'mix_bpr_weight_loss': [0.001],
+            'dragon_bpr_weight': [0.01],
+            'align_weight_loss': [0.01],
+            'diver_weight_loss': [0.001],
             'seed': [999],
         }
     elif args.dataset == 'clothing_sparse':

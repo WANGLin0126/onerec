@@ -15,16 +15,17 @@ from load_ckpt import load_model_and_data           # 你自己实现的
 from dragon_utils import extract_dragon_embeddings
 
 # ============ 配置 ============
-DATASET   = 'clothing_sparse'
-DEVICE    = 'cpu'
-K_LIST    = [10, 20, 50]
-N_SEEDS   = 3
-EMB_TYPES = ['item_id', 'item_cf', 'item_fused_proxy',
-             'v_item', 't_item', 'v_homo', 'v_diver']  # 想跑的全在这
-TSNE_K    = 10
-SAMPLE_N  = 5000
-PCA_DIM   = 50
-OUT_DIR   = '/home/wanglin/Projects/onerec/onerec_v2/DRAGON/analysis/results'
+DATASET           = 'sports_sparse'
+DEVICE            = 'cpu'
+K_LIST            = [10, 20, 50]
+N_SEEDS           = 3
+EMB_TYPES         = ['item_id', 'item_cf', 'item_fused_proxy',
+                     'v_item', 't_item', 'v_homo', 'v_diver']
+TSNE_K            = 10
+SAMPLE_N          = 5000
+PCA_DIM           = 50
+TOP_M_PER_CLUSTER = 100        # 每簇只画最接近中心的 M 个点；设为 None 或 <=0 关闭
+OUT_DIR           = '/home/wanglin/Projects/onerec/onerec_v2/DRAGON/analysis/results'
 # ==============================
 
 
@@ -36,10 +37,10 @@ def cluster_metrics(emb, K, seed=42):
             'sil': np.nan, 'db': np.nan,
             'labels': np.zeros(len(emb), dtype=int),
         }
-    
+
     km = KMeans(n_clusters=K, random_state=seed, n_init=10).fit(emb)
     labels, centers = km.labels_, km.cluster_centers_
-    
+
     # 退化检测2: 实际只聚出 < 2 个簇
     if len(np.unique(labels)) < 2:
         return {
@@ -47,11 +48,12 @@ def cluster_metrics(emb, K, seed=42):
             'sil': np.nan, 'db': np.nan,
             'labels': labels,
         }
-    
+
     radii = []
     for k in range(K):
         m = emb[labels == k]
-        if len(m) == 0: continue
+        if len(m) == 0:
+            continue
         radii.append(np.linalg.norm(m - centers[k], axis=1).mean())
     avg_r = float(np.mean(radii))
 
@@ -81,7 +83,8 @@ def metrics_multi_seed(emb, K, n_seeds=3):
     last_labels = None
     for s in range(n_seeds):
         r = cluster_metrics(emb, K, seed=42 + s)
-        for k in keys: accum[k].append(r[k])
+        for k in keys:
+            accum[k].append(r[k])
         last_labels = r['labels']
     out = {k: float(np.mean(v)) for k, v in accum.items()}
     out.update({k + '_std': float(np.std(v)) for k, v in accum.items()})
@@ -89,8 +92,35 @@ def metrics_multi_seed(emb, K, n_seeds=3):
     return out
 
 
+def _keep_topm_per_cluster(emb, labels, m_per_cluster):
+    """在原始 embedding 空间里，每个簇保留离其中心最近的 m 个点。
+
+    Returns
+    -------
+    idx : np.ndarray
+        被保留的样本在原 emb 中的下标（升序）。
+    """
+    if m_per_cluster is None or m_per_cluster <= 0:
+        return np.arange(len(emb))
+
+    keep = []
+    for k in np.unique(labels):
+        idx_k = np.where(labels == k)[0]
+        if len(idx_k) == 0:
+            continue
+        center = emb[idx_k].mean(axis=0, keepdims=True)
+        dists = np.linalg.norm(emb[idx_k] - center, axis=1)
+        take = min(m_per_cluster, len(idx_k))
+        # argpartition: O(n) partial sort
+        sel = idx_k[np.argpartition(dists, take - 1)[:take]]
+        keep.append(sel)
+    if not keep:
+        return np.arange(len(emb))
+    return np.sort(np.concatenate(keep))
+
+
 def plot_tsne_compare(b_emb, b_lab, f_emb, f_lab, title_prefix, out_path,
-                      sample_n=5000, pca_dim=50):
+                      sample_n=5000, pca_dim=50, top_m_per_cluster=None):
     b_deg = b_emb.std() < 1e-8
     f_deg = f_emb.std() < 1e-8
     if b_deg or f_deg:
@@ -103,10 +133,19 @@ def plot_tsne_compare(b_emb, b_lab, f_emb, f_lab, title_prefix, out_path,
     rng = np.random.RandomState(42)
 
     def reduce(emb, labels):
+        # ① 先按簇筛：每簇只保留离中心最近的 top_m_per_cluster 个
+        if top_m_per_cluster is not None and top_m_per_cluster > 0:
+            idx = _keep_topm_per_cluster(emb, labels, top_m_per_cluster)
+            emb, labels = emb[idx], labels[idx]
+            print(f'    kept top-{top_m_per_cluster}/cluster -> {len(emb)} pts')
+
+        # ② 再做随机子采样（防止单簇过大仍然爆 t-SNE）
         n = len(emb)
         if n > sample_n:
-            idx = rng.choice(n, sample_n, replace=False)
-            emb, labels = emb[idx], labels[idx]
+            sub = rng.choice(n, sample_n, replace=False)
+            emb, labels = emb[sub], labels[sub]
+
+        # ③ PCA + t-SNE
         if emb.shape[1] > pca_dim:
             emb = PCA(n_components=pca_dim, random_state=42).fit_transform(emb)
         proj = TSNE(n_components=2, perplexity=30, init='pca',
@@ -144,7 +183,6 @@ def main():
     full_embs = extract_dragon_embeddings(full_model)
     del full_model; torch.cuda.empty_cache()
 
-
     print('\n--- Embedding diagnostics ---')
     print(f'{"name":20s} | {"base std":>10s} | {"full std":>10s} | status')
     for n in EMB_TYPES:
@@ -157,8 +195,7 @@ def main():
         elif f_std < 1e-8: status.append('full degenerate')
         if not status: status.append('OK')
         print(f'{n:20s} | {b_std if b_std is not None else "N/A":>10} | '
-            f'{f_std if f_std is not None else "N/A":>10} | {", ".join(status)}')
-
+              f'{f_std if f_std is not None else "N/A":>10} | {", ".join(status)}')
 
     available = [n for n in EMB_TYPES if n in base_embs and n in full_embs]
     print(f'\nAnalyzing: {available}')
@@ -186,8 +223,9 @@ def main():
                 plot_tsne_compare(
                     b, mb['labels'], f, mf['labels'],
                     title_prefix=f'{name} (K={K})',
-                    out_path=f'{OUT_DIR}/figures/tsne_{DATASET}_{name}_K{K}.pdf',
-                    sample_n=SAMPLE_N, pca_dim=PCA_DIM)
+                    out_path=f'{OUT_DIR}/figures/tsne_{DATASET}_{name}_K{K}_top{TOP_M_PER_CLUSTER}.pdf',
+                    sample_n=SAMPLE_N, pca_dim=PCA_DIM,
+                    top_m_per_cluster=TOP_M_PER_CLUSTER)
 
     df = pd.DataFrame(rows)
     csv = f'{OUT_DIR}/tables/cluster_metrics_{DATASET}.csv'

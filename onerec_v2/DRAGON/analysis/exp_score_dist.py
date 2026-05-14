@@ -16,7 +16,7 @@ from dragon_utils import warmup_dragon
 
 # ============ 配置 ============
 DATASET = 'clothing_sparse'
-DEVICE  = 'cpu'
+DEVICE  = 'cuda:0'
 N_NEG   = 99
 SEED    = 42
 SPARSE_THR = (1, 5)
@@ -95,7 +95,8 @@ def collect_scores(model, train_inter, test_inter, n_items,
 def normalize_per_user(df):
     df = df.copy()
     df['score_norm'] = df.groupby('user')['score'].transform(
-        lambda x: (x - x.mean()) / (x.std() + 1e-8))
+        # lambda x: (x - x.mean()) / (x.std() + 1e-8))
+        lambda x: (x - x.mean()) )
     return df
 
 
