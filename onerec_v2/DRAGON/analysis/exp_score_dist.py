@@ -15,7 +15,7 @@ from load_ckpt import load_model_and_data
 from dragon_utils import warmup_dragon
 
 # ============ 配置 ============
-DATASET = 'clothing_sparse'
+DATASET = 'baby_sparse'
 DEVICE  = 'cuda:0'
 N_NEG   = 99
 SEED    = 42
@@ -54,6 +54,7 @@ def score_one_user(model, u, device):
     empty_mask = torch.zeros((2, 0), dtype=torch.long).to(device)
     interaction = [u_tensor, empty_mask]
     s = model.full_sort_predict(interaction)
+    print("s:", s)
     return s.detach().squeeze().cpu().numpy()
 
 

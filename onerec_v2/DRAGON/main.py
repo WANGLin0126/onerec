@@ -15,7 +15,7 @@ os.environ['NUMEXPR_MAX_THREADS'] = '48'
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", "-m", type=str, default="DRAGON", help="name of model")
-    parser.add_argument("--dataset", "-d", type=str, default="baby_sparse", help="name of dataset")
+    parser.add_argument("--dataset", "-d", type=str, default="sports_sparse", help="name of dataset")
 
     # Ablation 开关参数（True / False）
     parser.add_argument("--use_homogeneity", type=ast.literal_eval, default=True, help="whether to use homogeneity info (True/False)")
@@ -26,7 +26,7 @@ if __name__ == '__main__':
 
 
     # ============ 修改 1:新增 ckpt_tag 参数 ============
-    parser.add_argument("--ckpt_tag", type=str, default="base",
+    parser.add_argument("--ckpt_tag", type=str, default="full",
                         help="checkpoint filename tag, e.g. base / full / ablation_xxx")
     # ===================================================
 
@@ -78,7 +78,7 @@ if __name__ == '__main__':
 
     args, _ = parser.parse_known_args()
     print("config_dict", config_dict)
-    quick_start(model=args.model, dataset=args.dataset, config_dict=config_dict, save_model=True)
+    quick_start(model=args.model, dataset=args.dataset, config_dict=config_dict, save_model=False)
 
 
 # nohup python main.py --dataset baby >log/test_add_dragonv3.log 2>&1 &

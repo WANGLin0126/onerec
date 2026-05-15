@@ -581,6 +581,7 @@ class DRAGON(GeneralRecommender):
         # print("item_rep:", item_rep.shape)
 
         modal_scores = torch.matmul(user_tensor, item_rep.t())  # [N, D] @ [D, M] -> [N, M]
+        # print("modal_scores:", modal_scores[0])
         return scores + modal_scores
 
 
